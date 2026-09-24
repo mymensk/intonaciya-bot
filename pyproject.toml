@@ -5,8 +5,11 @@ description = "ИИ-ассистент для сложных разговоро�
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "aiogram>=3.13",
     "httpx>=0.27",
+    "pillow>=10.4",
     "pydantic-settings>=2.4",
+    "pytesseract>=0.3.13",
 ]
 
 [project.optional-dependencies]
@@ -33,3 +36,4 @@ select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "SIM"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["tests"]
