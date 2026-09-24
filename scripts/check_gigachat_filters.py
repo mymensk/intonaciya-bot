@@ -14,20 +14,18 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from string import Template
 
 import httpx
 
 from intonaciya.config import Settings
+from intonaciya.dialogue import Line
 from intonaciya.llm import LLMProvider, Message, RefusalKind, classify_refusal
 from intonaciya.llm.factory import build_provider
+from intonaciya.prompts import build_coach_messages
 
 ROOT = Path(__file__).resolve().parent.parent
-PROMPTS_DIR = ROOT / "prompts"
 DEFAULT_SCENARIOS = Path(__file__).resolve().parent / "data" / "filter_scenarios.json"
 DEFAULT_OUT_DIR = ROOT / "reports"
-
-AUTHOR_LABELS = {"me": "Я", "them": "Собеседник"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,17 +56,8 @@ def load_scenarios(path: Path) -> list[Scenario]:
 
 
 def build_messages(scenario: Scenario) -> list[Message]:
-    system = (PROMPTS_DIR / "coach_system.md").read_text(encoding="utf-8").strip()
-    user_template = Template((PROMPTS_DIR / "coach_user.md").read_text(encoding="utf-8"))
-    dialogue = "\n".join(
-        f"{AUTHOR_LABELS[line['author']]}: {line['text']}" for line in scenario.dialogue
-    )
-    user = user_template.substitute(
-        situation=scenario.situation,
-        dialogue=dialogue or "(переписки ещё нет)",
-        request=scenario.request,
-    ).strip()
-    return [Message("system", system), Message("user", user)]
+    lines = [Line(author=item["author"], text=item["text"]) for item in scenario.dialogue]
+    return build_coach_messages(scenario.situation, lines, scenario.request)
 
 
 async def run_one(
@@ -191,8 +180,13 @@ async def main() -> None:
         return
 
     settings = Settings()
-    models = args.models.split(",") if args.models else [settings.default_model]
-    providers = [build_provider(settings, model.strip()) for model in models]
+    try:
+        providers = [
+            build_provider(settings, model.strip())
+            for model in (args.models.split(",") if args.models else [settings.default_model])
+        ]
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     semaphore = asyncio.Semaphore(args.concurrency)
     try:
         results = await asyncio.gather(
