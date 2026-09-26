@@ -179,7 +179,8 @@ async def main() -> None:
     parser.add_argument("--repeat", type=int, default=1, help="Runs per scenario (default: 1)")
     parser.add_argument("--scenarios", type=Path, default=DEFAULT_SCENARIOS)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT_DIR)
-    parser.add_argument("--concurrency", type=int, default=2)
+    # Freemium plans for individuals process one request at a time.
+    parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--dry-run", action="store_true", help="Print prompts without API calls")
     args = parser.parse_args()
 

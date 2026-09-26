@@ -8,7 +8,7 @@ import httpx
 from intonaciya.llm.base import Completion, Message
 
 OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-API_URL = "https://gigachat.devices.sberbank.ru/api/v1"
+API_URL = "https://api.giga.chat/v1"
 
 # Refresh the token slightly before it actually expires.
 TOKEN_EXPIRY_MARGIN_S = 60

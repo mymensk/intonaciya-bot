@@ -65,7 +65,7 @@ mkdir -p certs && curl -o certs/russian_trusted_root_ca.pem https://gu-st.ru/con
 Проверка ответов GigaChat на тестовых сценариях. Отчёт сохраняется в `reports/`:
 
 ```bash
-.venv/bin/python scripts/check_gigachat_filters.py --models GigaChat,GigaChat-Pro --repeat 3
+.venv/bin/python scripts/check_gigachat_filters.py --models GigaChat-2,GigaChat-2-Pro,GigaChat-2-Max,GigaChat-3-Ultra --repeat 3
 ```
 
 Правила разработки описаны в [CONTRIBUTING.md](CONTRIBUTING.md).
