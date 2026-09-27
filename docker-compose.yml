@@ -1,9 +1,13 @@
+name: intonaciya
+
 services:
   bot:
     build: .
     image: intonaciya-bot
     env_file: .env
     restart: unless-stopped
+    # The bot shares hosts with other services: keep its footprint bounded.
+    mem_limit: 512m
     logging:
       driver: json-file
       options:
