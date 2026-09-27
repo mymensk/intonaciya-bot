@@ -20,4 +20,6 @@ class Completion:
 
 
 class LLMProvider(Protocol):
+    model: str
+
     async def complete(self, messages: Sequence[Message]) -> Completion: ...

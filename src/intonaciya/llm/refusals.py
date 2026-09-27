@@ -5,7 +5,8 @@ from intonaciya.llm.base import Completion
 
 class RefusalKind(StrEnum):
     NONE = "none"
-    # The API itself blocked the answer (finish_reason == "blacklist").
+    # The API itself blocked the answer: "blacklist" in GigaChat, "content_filter" in
+    # OpenAI-compatible APIs.
     HARD = "hard"
     # The model answered, but with a refusal instead of help.
     SOFT = "soft"
@@ -42,7 +43,7 @@ def _normalize(text: str) -> str:
 
 
 def classify_refusal(completion: Completion) -> RefusalKind:
-    if completion.finish_reason == "blacklist":
+    if completion.finish_reason in ("blacklist", "content_filter"):
         return RefusalKind.HARD
 
     text = _normalize(completion.text)
