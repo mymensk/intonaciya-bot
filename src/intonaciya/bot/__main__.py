@@ -6,7 +6,8 @@ from aiogram import Bot, Dispatcher
 
 from intonaciya.bot.handlers import AllowlistMiddleware, router
 from intonaciya.config import Settings
-from intonaciya.llm import GigaChatProvider, LLMProvider
+from intonaciya.llm import LLMProvider
+from intonaciya.llm.factory import build_provider
 from intonaciya.llm.stub import StubProvider
 from intonaciya.screenshots import TesseractReader
 from intonaciya.sessions import SessionStore
@@ -15,15 +16,13 @@ logger = logging.getLogger(__name__)
 
 
 def build_llm(settings: Settings) -> LLMProvider:
-    if settings.gigachat_auth_key is None:
-        logger.warning("GIGACHAT_AUTH_KEY is not set, using the stub LLM")
+    try:
+        provider = build_provider(settings)
+    except RuntimeError:
+        logger.warning("No LLM credentials configured, using the stub LLM")
         return StubProvider()
-    return GigaChatProvider(
-        settings.gigachat_auth_key.get_secret_value(),
-        scope=settings.gigachat_scope,
-        model=settings.gigachat_model,
-        ca_bundle=settings.gigachat_ca_bundle,
-    )
+    logger.info("LLM backend %s, model %s", type(provider).__name__, provider.model)
+    return provider
 
 
 async def main() -> None:
