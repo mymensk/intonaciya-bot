@@ -74,4 +74,17 @@ mkdir -p certs && curl -o certs/russian_trusted_root_ca.pem https://gu-st.ru/con
 .venv/bin/python scripts/key_balance.py
 ```
 
+## Развёртывание
+
+Бот работает в Docker на сервере с доступом в интернет (вебхук и домен не нужны: бот сам опрашивает Telegram).
+
+```bash
+git clone https://github.com/mymensk/intonaciya-bot.git && cd intonaciya-bot
+cp .env.example .env   # заполнить токен бота, ключи и список тестировщиков
+docker compose up -d --build
+docker compose logs -f bot
+```
+
+Обновление: `git pull && docker compose up -d --build`.
+
 Правила разработки описаны в [CONTRIBUTING.md](CONTRIBUTING.md).
