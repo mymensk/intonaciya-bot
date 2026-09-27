@@ -19,7 +19,8 @@ from string import Template
 import httpx
 
 from intonaciya.config import Settings
-from intonaciya.llm import GigaChatProvider, Message, RefusalKind, classify_refusal
+from intonaciya.llm import LLMProvider, Message, RefusalKind, classify_refusal
+from intonaciya.llm.factory import build_provider
 
 ROOT = Path(__file__).resolve().parent.parent
 PROMPTS_DIR = ROOT / "prompts"
@@ -71,7 +72,7 @@ def build_messages(scenario: Scenario) -> list[Message]:
 
 
 async def run_one(
-    provider: GigaChatProvider,
+    provider: LLMProvider,
     scenario: Scenario,
     attempt: int,
     semaphore: asyncio.Semaphore,
@@ -175,7 +176,7 @@ def print_dry_run(scenarios: list[Scenario]) -> None:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--models", help="Comma-separated models; defaults to GIGACHAT_MODEL")
+    parser.add_argument("--models", help="Comma-separated models; defaults to the configured one")
     parser.add_argument("--repeat", type=int, default=1, help="Runs per scenario (default: 1)")
     parser.add_argument("--scenarios", type=Path, default=DEFAULT_SCENARIOS)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT_DIR)
@@ -190,16 +191,8 @@ async def main() -> None:
         return
 
     settings = Settings()
-    models = args.models.split(",") if args.models else [settings.gigachat_model]
-    providers = [
-        GigaChatProvider(
-            settings.gigachat_auth_key.get_secret_value(),
-            scope=settings.gigachat_scope,
-            model=model.strip(),
-            ca_bundle=settings.gigachat_ca_bundle,
-        )
-        for model in models
-    ]
+    models = args.models.split(",") if args.models else [settings.default_model]
+    providers = [build_provider(settings, model.strip()) for model in models]
     semaphore = asyncio.Semaphore(args.concurrency)
     try:
         results = await asyncio.gather(
