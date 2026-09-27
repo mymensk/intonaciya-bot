@@ -3,9 +3,11 @@ import logging
 import shutil
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
 
 from intonaciya.bot import texts
 from intonaciya.bot.handlers import AllowlistMiddleware, router
+from intonaciya.bot.network import RetryOnNetworkError
 from intonaciya.config import Settings
 from intonaciya.llm import LLMProvider
 from intonaciya.llm.budget import crossed_threshold, fetch_key_budget
@@ -78,7 +80,10 @@ async def main() -> None:
     if settings.telegram_bot_token is None:
         raise SystemExit("TELEGRAM_BOT_TOKEN is not set")
 
-    bot = Bot(settings.telegram_bot_token.get_secret_value())
+    # A short timeout plus retries rides out a flaky path to the Bot API.
+    session = AiohttpSession(timeout=settings.telegram_timeout_s)
+    session.middleware(RetryOnNetworkError())
+    bot = Bot(settings.telegram_bot_token.get_secret_value(), session=session)
     if shutil.which("tesseract") is None:
         logger.warning("tesseract is not installed, screenshots will fail")
     dp = Dispatcher(

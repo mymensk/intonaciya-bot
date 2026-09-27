@@ -6,6 +6,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     telegram_bot_token: SecretStr | None = None
+    # Timeout of a single Bot API request; network failures are retried.
+    telegram_timeout_s: int = 15
     # Comma-separated Telegram user IDs allowed to use the bot, or "*" for everyone.
     # Empty keeps the bot closed: it only tells users their ID.
     allowed_user_ids: str = ""

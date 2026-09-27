@@ -18,6 +18,7 @@ from aiogram.types import (
 )
 
 from intonaciya.bot import texts
+from intonaciya.bot.network import retry
 from intonaciya.dialogue import format_dialogue, to_line
 from intonaciya.llm import LLMProvider, RefusalKind, classify_refusal
 from intonaciya.prompts import build_coach_messages
@@ -142,6 +143,12 @@ async def on_forward(message: Message, event_from_user: User, sessions: SessionS
     _schedule_ack(message, sessions, event_from_user.id)
 
 
+async def _download(message: Message, file_id: str) -> bytes:
+    buffer = io.BytesIO()
+    await message.bot.download(file_id, destination=buffer)
+    return buffer.getvalue()
+
+
 @router.message(F.photo | F.document.mime_type.startswith("image/"))
 async def on_screenshot(
     message: Message,
@@ -154,9 +161,8 @@ async def on_screenshot(
     started = time.monotonic()
     try:
         # Kept in memory only and dropped with this call: screenshots are never stored.
-        image = io.BytesIO()
-        await message.bot.download(file_id, destination=image)
-        lines = await screenshots.read(image.getvalue())
+        image = await retry(lambda: _download(message, file_id), label="download")
+        lines = await screenshots.read(image)
     except Exception as exc:
         logger.error("screenshot_failed user=%s error=%s", event_from_user.id, type(exc).__name__)
         await message.answer(texts.SCREENSHOT_ERROR)
