@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     llm_base_url: str | None = None
     llm_api_key: SecretStr | None = None
     llm_model: str = "gigachat3.5-432b-a28b"
+    # Screenshots are read by this multimodal model through the gateway ("" to use
+    # local Tesseract only). Tesseract stays as a fallback either way.
+    vision_model: str = "qwen3-vl-8b-instruct"
 
     # Direct GigaChat API access (OAuth with an Authorization Key).
     # Without any LLM credentials the bot falls back to a stub that echoes the prompt.

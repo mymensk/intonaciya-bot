@@ -10,14 +10,14 @@ PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
 
 
 @cache
-def _load(name: str) -> str:
+def load_prompt(name: str) -> str:
     return (PROMPTS_DIR / name).read_text(encoding="utf-8").strip()
 
 
 def build_coach_messages(situation: str, lines: Sequence[Line], request: str) -> list[Message]:
-    user = Template(_load("coach_user.md")).substitute(
+    user = Template(load_prompt("coach_user.md")).substitute(
         situation=situation,
         dialogue=format_dialogue(lines) or "(переписки ещё нет)",
         request=request,
     )
-    return [Message("system", _load("coach_system.md")), Message("user", user)]
+    return [Message("system", load_prompt("coach_system.md")), Message("user", user)]
