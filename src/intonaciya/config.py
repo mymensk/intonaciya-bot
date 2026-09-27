@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     # Comma-separated Telegram user IDs allowed to use the bot, or "*" for everyone.
     # Empty keeps the bot closed: it only tells users their ID.
     allowed_user_ids: str = ""
+    # Telegram ID that receives service alerts (e.g. LLM budget running low).
+    admin_user_id: int | None = None
+    budget_check_interval_s: int = 3600
 
     # OpenAI-compatible LLM gateway. Takes precedence over direct GigaChat access.
     llm_base_url: str | None = None
@@ -25,7 +28,9 @@ class Settings(BaseSettings):
     gigachat_model: str = "GigaChat-2"
     gigachat_ca_bundle: str | None = None
 
-    @field_validator("telegram_bot_token", "llm_api_key", "gigachat_auth_key", mode="before")
+    @field_validator(
+        "telegram_bot_token", "llm_api_key", "gigachat_auth_key", "admin_user_id", mode="before"
+    )
     @classmethod
     def _empty_secret_is_none(cls, value: object) -> object:
         return value or None

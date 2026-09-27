@@ -4,9 +4,11 @@ import shutil
 
 from aiogram import Bot, Dispatcher
 
+from intonaciya.bot import texts
 from intonaciya.bot.handlers import AllowlistMiddleware, router
 from intonaciya.config import Settings
 from intonaciya.llm import LLMProvider
+from intonaciya.llm.budget import crossed_threshold, fetch_key_budget
 from intonaciya.llm.factory import build_provider
 from intonaciya.llm.stub import StubProvider
 from intonaciya.screenshots import ScreenshotReader, TesseractReader
@@ -14,6 +16,8 @@ from intonaciya.sessions import SessionStore
 from intonaciya.vision import FallbackReader, VisionReader
 
 logger = logging.getLogger(__name__)
+
+BUDGET_THRESHOLDS = (0.5, 0.8, 0.95)
 
 
 def build_llm(settings: Settings) -> LLMProvider:
@@ -40,6 +44,34 @@ def build_screenshot_reader(settings: Settings) -> ScreenshotReader:
     return FallbackReader(vision, tesseract)
 
 
+async def watch_budget(bot: Bot, settings: Settings) -> None:
+    """Alert the admin once per threshold as the gateway key budget gets used up."""
+    if not (settings.admin_user_id and settings.llm_api_key and settings.llm_base_url):
+        return
+    alerted: set[float] = set()
+    while True:
+        try:
+            budget = await fetch_key_budget(
+                settings.llm_api_key.get_secret_value(), settings.llm_base_url
+            )
+            logger.info("llm_budget spend=%.2f max=%s", budget.spend, budget.max_budget)
+            threshold = crossed_threshold(budget, BUDGET_THRESHOLDS, alerted)
+            if threshold is not None:
+                alerted.update(t for t in BUDGET_THRESHOLDS if t <= threshold)
+                await bot.send_message(
+                    settings.admin_user_id,
+                    texts.BUDGET_ALERT.format(
+                        share=budget.used_share,
+                        spend=budget.spend,
+                        max_budget=budget.max_budget,
+                        remaining=budget.remaining,
+                    ),
+                )
+        except Exception as exc:
+            logger.warning("llm_budget_check_failed error=%s", type(exc).__name__)
+        await asyncio.sleep(settings.budget_check_interval_s)
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     settings = Settings()
@@ -61,7 +93,11 @@ async def main() -> None:
     dp.callback_query.outer_middleware(allowlist)
     dp.include_router(router)
 
-    await dp.start_polling(bot)
+    budget_task = asyncio.create_task(watch_budget(bot, settings))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        budget_task.cancel()
 
 
 if __name__ == "__main__":

@@ -68,4 +68,10 @@ mkdir -p certs && curl -o certs/russian_trusted_root_ca.pem https://gu-st.ru/con
 .venv/bin/python scripts/check_gigachat_filters.py --models gigachat3.5-432b-a28b,gigachat-3-pro,gigachat-2-max --repeat 3
 ```
 
+Расход и остаток бюджета ключа LLM-шлюза:
+
+```bash
+.venv/bin/python scripts/key_balance.py
+```
+
 Правила разработки описаны в [CONTRIBUTING.md](CONTRIBUTING.md).
