@@ -138,8 +138,19 @@ def test_summary_counts_real_users_only(metrics: Metrics, clock) -> None:
     assert (today.dau, today.spend, today.cost_per_dau) == (1, 30.0, 30.0)
     assert summary.total_users == 2
     assert summary.d1 == 0.5
-    assert summary.sources == {"direct": 1, "ads": 1}
-    assert "DAU" in format_summary(summary)
+    ads, direct = summary.sources
+    assert (ads.source, ads.users, ads.activated, ads.d1_returned, ads.llm_calls) == (
+        "ads",
+        1,
+        1,
+        1,
+        3,
+    )
+    assert (ads.activation, ads.d1, ads.calls_per_user) == (1.0, 1.0, 3.0)
+    assert (direct.source, direct.users, direct.activated, direct.d1) == ("direct", 1, 0, 0.0)
+    report = format_summary(summary)
+    assert "DAU" in report
+    assert "ads: 1 → 0 → 1 (100%)" in report
 
     out = io.StringIO()
     write_csv(summary, out)
