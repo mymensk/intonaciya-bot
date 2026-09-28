@@ -36,6 +36,33 @@ class DayStats:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceFunnel:
+    """How users from one acquisition channel get through to real use."""
+
+    source: str
+    users: int
+    consented: int
+    # Got at least one useful analysis (not an error, not a refusal).
+    activated: int
+    # Users old enough to be counted for D1, and those of them active on day 1.
+    d1_eligible: int
+    d1_returned: int
+    llm_calls: int
+
+    @property
+    def activation(self) -> float | None:
+        return round(self.activated / self.users, 3) if self.users else None
+
+    @property
+    def d1(self) -> float | None:
+        return round(self.d1_returned / self.d1_eligible, 3) if self.d1_eligible else None
+
+    @property
+    def calls_per_user(self) -> float:
+        return round(self.llm_calls / self.users, 1) if self.users else 0.0
+
+
+@dataclass(frozen=True, slots=True)
 class Summary:
     days: list[DayStats]
     total_users: int
@@ -43,7 +70,7 @@ class Summary:
     stickiness: float | None
     d1: float | None
     d7: float | None
-    sources: dict[str, int]
+    sources: list[SourceFunnel]
 
 
 def _scalar(db: sqlite3.Connection, sql: str, *params: object) -> int:
@@ -126,6 +153,23 @@ def _retention(db: sqlite3.Connection, offset: int, today: date) -> float | None
     return round(returned / len(cohorts), 3)
 
 
+def _source_funnels(db: sqlite3.Connection, today: date) -> list[SourceFunnel]:
+    first_day = "date(u.first_seen, '+3 hours')"
+    rows = db.execute(
+        "SELECT COALESCE(u.source, 'direct'), COUNT(*), SUM(u.consented_at IS NOT NULL),"
+        " SUM(EXISTS (SELECT 1 FROM events e WHERE e.user_key = u.user_key"
+        "   AND e.event = 'analysis' AND e.status = 'none')),"
+        f" SUM({first_day} <= ?),"
+        " SUM(EXISTS (SELECT 1 FROM events e WHERE e.user_key = u.user_key"
+        f"   AND {_ACTIVE} AND e.day = date({first_day}, '+1 day'))),"
+        " SUM((SELECT COUNT(*) FROM events e WHERE e.user_key = u.user_key"
+        "   AND e.event = 'llm_call'))"
+        " FROM users u WHERE u.is_test = 0 GROUP BY 1 ORDER BY 2 DESC, 1",
+        ((today - timedelta(days=1)).isoformat(),),
+    ).fetchall()
+    return [SourceFunnel(*(row[0], *(value or 0 for value in row[1:]))) for row in rows]
+
+
 def build_summary(db: sqlite3.Connection, *, days: int, today: date) -> Summary:
     spend = _daily_spend(db)
     day_list = [(today - timedelta(days=offset)).isoformat() for offset in range(days)]
@@ -137,12 +181,6 @@ def build_summary(db: sqlite3.Connection, *, days: int, today: date) -> Summary:
     )
     week = stats[:7]
     avg_dau = sum(s.dau for s in week) / len(week) if week else 0
-    sources = dict(
-        db.execute(
-            "SELECT COALESCE(source, 'direct'), COUNT(*) FROM users WHERE is_test = 0"
-            " GROUP BY 1 ORDER BY 2 DESC"
-        ).fetchall()
-    )
     return Summary(
         days=stats,
         total_users=_scalar(db, "SELECT COUNT(*) FROM users WHERE is_test = 0"),
@@ -150,7 +188,7 @@ def build_summary(db: sqlite3.Connection, *, days: int, today: date) -> Summary:
         stickiness=round(avg_dau / mau, 3) if mau else None,
         d1=_retention(db, 1, today),
         d7=_retention(db, 7, today),
-        sources=sources,
+        sources=_source_funnels(db, today),
     )
 
 
@@ -180,9 +218,12 @@ def format_summary(summary: Summary) -> str:
         f" и {today.peak_tpm} токенов/мин, средняя задержка {today.avg_latency_ms} мс",
     ]
     if summary.sources:
-        lines.append(
-            "Источники: " + ", ".join(f"{name} {count}" for name, count in summary.sources.items())
-        )
+        lines += ["", "Каналы: пришли → согласие → разбор (активация) | D1 | запросов на чел."]
+        lines += [
+            f"{f.source}: {f.users} → {f.consented} → {f.activated} ({_pct(f.activation)})"
+            f" | {_pct(f.d1)} | {f.calls_per_user}"
+            for f in summary.sources
+        ]
     return "\n".join(lines)
 
 
@@ -193,22 +234,40 @@ def write_csv(summary: Summary, out: object) -> None:
         writer.writerow(asdict(s))
 
 
+def write_sources_csv(summary: Summary, out: object) -> None:
+    writer = csv.writer(out)  # type: ignore[arg-type]
+    writer.writerow(
+        ["source", "users", "consented", "activated", "activation", "d1", "calls_per_user"]
+    )
+    for f in summary.sources:
+        writer.writerow(
+            [f.source, f.users, f.consented, f.activated, f.activation, f.d1, f.calls_per_user]
+        )
+
+
+def _write(path: str, writer: object, summary: Summary) -> None:
+    if path == "-":
+        writer(summary, sys.stdout)  # type: ignore[operator]
+        return
+    with open(path, "w", newline="", encoding="utf-8") as out:
+        writer(summary, out)  # type: ignore[operator]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default="data/metrics.sqlite3")
     parser.add_argument("--days", type=int, default=14)
     parser.add_argument("--csv", help="write daily stats to this CSV file ('-' for stdout)")
+    parser.add_argument("--sources-csv", help="write the funnel by source ('-' for stdout)")
     args = parser.parse_args()
 
     db = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
     summary = build_summary(db, days=args.days, today=datetime.now(MSK).date())
-    if args.csv == "-":
-        write_csv(summary, sys.stdout)
-    elif args.csv:
-        with open(args.csv, "w", newline="", encoding="utf-8") as out:
-            write_csv(summary, out)
-        print(format_summary(summary))
-    else:
+    if args.csv:
+        _write(args.csv, write_csv, summary)
+    if args.sources_csv:
+        _write(args.sources_csv, write_sources_csv, summary)
+    if "-" not in (args.csv, args.sources_csv):
         print(format_summary(summary))
 
 
