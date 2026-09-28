@@ -14,7 +14,8 @@ COPY prompts ./prompts
 # Editable install keeps prompts/ next to the package, where the code looks for it.
 RUN pip install -e .
 
-RUN useradd --create-home --uid 1000 bot
+# data/ holds the metrics database and is mounted as a volume.
+RUN useradd --create-home --uid 1000 bot && mkdir -p /app/data && chown bot /app/data
 USER bot
 
 CMD ["python", "-m", "intonaciya.bot"]

@@ -8,8 +8,13 @@ services:
     restart: unless-stopped
     # The bot shares hosts with other services: keep its footprint bounded.
     mem_limit: 512m
+    volumes:
+      - data:/app/data
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  data:
