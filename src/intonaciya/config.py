@@ -14,6 +14,18 @@ class Settings(BaseSettings):
     # Telegram ID that receives service alerts (e.g. LLM budget running low).
     admin_user_id: int | None = None
     budget_check_interval_s: int = 3600
+    # Team and tester accounts: no daily limit, excluded from usage metrics.
+    # The admin is always a test account.
+    test_user_ids: str = ""
+    # LLM calls (analyses and screenshots) a user may make per day.
+    daily_llm_limit: int = 30
+    # Where to reach the operator; shown in the privacy notice.
+    support_contact: str = ""
+
+    # Usage metrics database (SQLite). Telegram IDs are stored as HMAC digests
+    # keyed with this secret: keep it stable, or users can no longer be matched.
+    metrics_db_path: str = "data/metrics.sqlite3"
+    metrics_salt: SecretStr | None = None
 
     # OpenAI-compatible LLM gateway. Takes precedence over direct GigaChat access.
     llm_base_url: str | None = None
@@ -31,7 +43,12 @@ class Settings(BaseSettings):
     gigachat_ca_bundle: str | None = None
 
     @field_validator(
-        "telegram_bot_token", "llm_api_key", "gigachat_auth_key", "admin_user_id", mode="before"
+        "telegram_bot_token",
+        "llm_api_key",
+        "gigachat_auth_key",
+        "metrics_salt",
+        "admin_user_id",
+        mode="before",
     )
     @classmethod
     def _empty_secret_is_none(cls, value: object) -> object:
@@ -50,3 +67,10 @@ class Settings(BaseSettings):
         if self.is_open_to_everyone:
             return frozenset()
         return frozenset(int(part) for part in self.allowed_user_ids.split(",") if part.strip())
+
+    @property
+    def test_user_id_set(self) -> frozenset[int]:
+        ids = {int(part) for part in self.test_user_ids.split(",") if part.strip()}
+        if self.admin_user_id:
+            ids.add(self.admin_user_id)
+        return frozenset(ids)

@@ -3,11 +3,12 @@ import io
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Any
 
 from aiogram import F, Router
 from aiogram.enums import ChatAction
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -19,8 +20,11 @@ from aiogram.types import (
 
 from intonaciya.bot import texts
 from intonaciya.bot.network import retry
+from intonaciya.config import Settings
 from intonaciya.dialogue import format_dialogue, to_line
 from intonaciya.llm import LLMProvider, RefusalKind, classify_refusal
+from intonaciya.metrics import MSK, Metrics, clean_source, current_user_id
+from intonaciya.metrics_report import build_summary, format_summary
 from intonaciya.prompts import build_coach_messages
 from intonaciya.screenshots import ScreenshotReader
 from intonaciya.sessions import SessionStore
@@ -41,6 +45,11 @@ _KEYBOARD = InlineKeyboardMarkup(
         ]
     ]
 )
+_CONSENT_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[[InlineKeyboardButton(text=texts.CONSENT_BUTTON, callback_data="consent")]]
+)
+# Reachable before consent: the consent flow itself and the privacy notice.
+_OPEN_COMMANDS = ("/start", "/privacy", "/forget")
 
 
 class AllowlistMiddleware:
@@ -62,6 +71,53 @@ class AllowlistMiddleware:
         if isinstance(event, Message) and user:
             await event.answer(texts.CLOSED_BETA.format(user_id=user.id))
         return None
+
+
+class ConsentMiddleware:
+    """Lets users in once they confirm their age and consent to data processing.
+
+    Also binds the user to the update, so metrics recorded deeper down know whose it is.
+    """
+
+    def __init__(self, metrics: Metrics) -> None:
+        self._metrics = metrics
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        user: User | None = data.get("event_from_user")
+        if user is None:
+            return await handler(event, data)
+        token = current_user_id.set(user.id)
+        try:
+            if self._metrics.has_consented(user.id) or _is_open(event):
+                return await handler(event, data)
+            if isinstance(event, Message):
+                await event.answer(texts.CONSENT_REQUIRED)
+            elif isinstance(event, CallbackQuery):
+                await event.answer(texts.CONSENT_REQUIRED, show_alert=True)
+            return None
+        finally:
+            current_user_id.reset(token)
+
+
+def _is_open(event: TelegramObject) -> bool:
+    if isinstance(event, CallbackQuery):
+        return event.data == "consent"
+    if isinstance(event, Message) and event.text:
+        command = event.text.split(maxsplit=1)[0].split("@", 1)[0]
+        return command in _OPEN_COMMANDS
+    return False
+
+
+def _over_limit(user_id: int, metrics: Metrics, settings: Settings) -> bool:
+    if metrics.is_test(user_id) or metrics.llm_calls_today(user_id) < settings.daily_llm_limit:
+        return False
+    metrics.record("limit_hit", user_id)
+    return True
 
 
 def _cancel_ack(user_id: int) -> None:
@@ -89,11 +145,20 @@ def _schedule_ack(message: Message, sessions: SessionStore, user_id: int) -> Non
 
 
 async def _analyze(
-    message: Message, user_id: int, request: str, sessions: SessionStore, llm: LLMProvider
+    message: Message,
+    user_id: int,
+    request: str,
+    sessions: SessionStore,
+    llm: LLMProvider,
+    metrics: Metrics,
+    settings: Settings,
 ) -> None:
     session = sessions.get(user_id)
     if session is None:
         await message.answer(texts.SESSION_EXPIRED)
+        return
+    if _over_limit(user_id, metrics, settings):
+        await message.answer(texts.LIMIT_REACHED)
         return
 
     await message.answer(texts.THINKING)
@@ -105,16 +170,38 @@ async def _analyze(
     except Exception as exc:
         # Log only the error type: exception messages may echo conversation text.
         logger.error("llm_failed user=%s error=%s", user_id, type(exc).__name__)
+        latency_ms = (time.monotonic() - started) * 1000
+        metrics.record(
+            "llm_call",
+            user_id,
+            purpose="coach",
+            status="error",
+            model=llm.model,
+            latency_ms=latency_ms,
+        )
+        metrics.record("analysis", user_id, status="error", value=len(session.lines))
         await message.answer(texts.LLM_ERROR)
         return
 
+    latency_ms = (time.monotonic() - started) * 1000
     refusal = classify_refusal(completion)
+    metrics.record(
+        "llm_call",
+        user_id,
+        purpose="coach",
+        status="ok",
+        model=llm.model,
+        tokens_in=completion.prompt_tokens,
+        tokens_out=completion.completion_tokens,
+        latency_ms=latency_ms,
+    )
+    metrics.record("analysis", user_id, status=refusal.value, value=len(session.lines))
     logger.info(
         "analysis_done user=%s lines=%s refusal=%s latency_ms=%d tokens_in=%s tokens_out=%s",
         user_id,
         len(session.lines),
         refusal.value,
-        (time.monotonic() - started) * 1000,
+        latency_ms,
         completion.prompt_tokens,
         completion.completion_tokens,
     )
@@ -126,20 +213,74 @@ async def _analyze(
 
 
 @router.message(CommandStart())
-async def on_start(message: Message) -> None:
-    await message.answer(texts.START)
+async def on_start(
+    message: Message, command: CommandObject, event_from_user: User, metrics: Metrics
+) -> None:
+    # t.me/<bot>?start=<source> tags where the user came from.
+    source = clean_source(command.args)
+    metrics.register(event_from_user.id, source)
+    metrics.record("start", event_from_user.id, purpose=source)
+    if metrics.has_consented(event_from_user.id):
+        await message.answer(texts.START)
+    else:
+        await message.answer(texts.CONSENT, reply_markup=_CONSENT_KEYBOARD)
+
+
+@router.callback_query(F.data == "consent")
+async def on_consent(callback: CallbackQuery, metrics: Metrics) -> None:
+    if not metrics.has_consented(callback.from_user.id):
+        metrics.record_consent(callback.from_user.id)
+    await callback.answer()
+    if isinstance(callback.message, Message):
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.answer(texts.START)
+
+
+@router.message(Command("privacy"))
+async def on_privacy(message: Message, settings: Settings) -> None:
+    text = texts.PRIVACY
+    if settings.support_contact:
+        text += texts.PRIVACY_CONTACT.format(contact=settings.support_contact)
+    await message.answer(text)
+
+
+@router.message(Command("forget"))
+async def on_forget(
+    message: Message, event_from_user: User, sessions: SessionStore, metrics: Metrics
+) -> None:
+    _cancel_ack(event_from_user.id)
+    sessions.pop(event_from_user.id)
+    metrics.forget(event_from_user.id)
+    await message.answer(texts.FORGET_DONE)
+
+
+@router.message(Command("stats"))
+async def on_stats(
+    message: Message, event_from_user: User, metrics: Metrics, settings: Settings
+) -> None:
+    if event_from_user.id != settings.admin_user_id:
+        await message.answer(texts.NO_DIALOGUE)
+        return
+    summary = build_summary(metrics.connection, days=7, today=datetime.now(MSK).date())
+    await message.answer(format_summary(summary))
 
 
 @router.message(Command("reset"))
-async def on_reset(message: Message, event_from_user: User, sessions: SessionStore) -> None:
+async def on_reset(
+    message: Message, event_from_user: User, sessions: SessionStore, metrics: Metrics
+) -> None:
     _cancel_ack(event_from_user.id)
     sessions.pop(event_from_user.id)
+    metrics.record("reset", event_from_user.id)
     await message.answer(texts.RESET_DONE)
 
 
 @router.message(F.forward_origin)
-async def on_forward(message: Message, event_from_user: User, sessions: SessionStore) -> None:
+async def on_forward(
+    message: Message, event_from_user: User, sessions: SessionStore, metrics: Metrics
+) -> None:
     sessions.add(event_from_user.id, message.message_id, [to_line(message, event_from_user)])
+    metrics.record("forward", event_from_user.id)
     _schedule_ack(message, sessions, event_from_user.id)
 
 
@@ -155,7 +296,12 @@ async def on_screenshot(
     event_from_user: User,
     sessions: SessionStore,
     screenshots: ScreenshotReader,
+    metrics: Metrics,
+    settings: Settings,
 ) -> None:
+    if _over_limit(event_from_user.id, metrics, settings):
+        await message.answer(texts.LIMIT_REACHED)
+        return
     file_id = message.photo[-1].file_id if message.photo else message.document.file_id
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     started = time.monotonic()
@@ -165,9 +311,17 @@ async def on_screenshot(
         lines = await screenshots.read(image)
     except Exception as exc:
         logger.error("screenshot_failed user=%s error=%s", event_from_user.id, type(exc).__name__)
+        metrics.record("screenshot", event_from_user.id, status="error")
         await message.answer(texts.SCREENSHOT_ERROR)
         return
 
+    metrics.record(
+        "screenshot",
+        event_from_user.id,
+        status="ok" if lines else "empty",
+        value=len(lines),
+        latency_ms=(time.monotonic() - started) * 1000,
+    )
     logger.info(
         "screenshot_read user=%s lines=%s latency_ms=%d",
         event_from_user.id,
@@ -183,13 +337,18 @@ async def on_screenshot(
 
 @router.message(F.text)
 async def on_request(
-    message: Message, event_from_user: User, sessions: SessionStore, llm: LLMProvider
+    message: Message,
+    event_from_user: User,
+    sessions: SessionStore,
+    llm: LLMProvider,
+    metrics: Metrics,
+    settings: Settings,
 ) -> None:
     if sessions.get(event_from_user.id) is None:
         await message.answer(texts.NO_DIALOGUE)
         return
     _cancel_ack(event_from_user.id)
-    await _analyze(message, event_from_user.id, message.text, sessions, llm)
+    await _analyze(message, event_from_user.id, message.text, sessions, llm, metrics, settings)
 
 
 @router.message()
@@ -199,12 +358,22 @@ async def on_other(message: Message) -> None:
 
 @router.callback_query(F.data == "analyze")
 async def on_analyze_button(
-    callback: CallbackQuery, sessions: SessionStore, llm: LLMProvider
+    callback: CallbackQuery,
+    sessions: SessionStore,
+    llm: LLMProvider,
+    metrics: Metrics,
+    settings: Settings,
 ) -> None:
     await callback.answer()
     if isinstance(callback.message, Message):
         await _analyze(
-            callback.message, callback.from_user.id, texts.DEFAULT_REQUEST, sessions, llm
+            callback.message,
+            callback.from_user.id,
+            texts.DEFAULT_REQUEST,
+            sessions,
+            llm,
+            metrics,
+            settings,
         )
 
 

@@ -4,11 +4,13 @@ import base64
 import json
 import logging
 import re
+import time
 from typing import Any
 
 import httpx
 
 from intonaciya.dialogue import Line
+from intonaciya.metrics import Metrics
 from intonaciya.prompts import load_prompt
 from intonaciya.screenshots import ScreenshotReader
 
@@ -58,8 +60,10 @@ class VisionReader:
         timeout_s: float = 60.0,
         attempts: int = 2,
         client: httpx.AsyncClient | None = None,
+        metrics: Metrics | None = None,
     ) -> None:
         self.model = model
+        self._metrics = metrics
         self._base_url = base_url.rstrip("/")
         self._attempts = attempts
         self._client = client or httpx.AsyncClient(
@@ -84,9 +88,7 @@ class VisionReader:
             ],
         }
         for attempt in range(1, self._attempts + 1):
-            response = await self._client.post(f"{self._base_url}/chat/completions", json=payload)
-            response.raise_for_status()
-            answer = response.json()["choices"][0]["message"].get("content") or ""
+            answer = await self._call(payload)
             try:
                 return parse_lines(answer)
             except VisionParseError as exc:
@@ -94,6 +96,29 @@ class VisionReader:
                 if attempt == self._attempts:
                     raise
         return []
+
+    async def _call(self, payload: dict[str, Any]) -> str:
+        started = time.monotonic()
+        usage: dict[str, Any] = {}
+        status = "error"
+        try:
+            response = await self._client.post(f"{self._base_url}/chat/completions", json=payload)
+            response.raise_for_status()
+            body = response.json()
+            usage = body.get("usage") or {}
+            status = "ok"
+            return body["choices"][0]["message"].get("content") or ""
+        finally:
+            if self._metrics:
+                self._metrics.record(
+                    "llm_call",
+                    purpose="vision",
+                    status=status,
+                    model=self.model,
+                    tokens_in=usage.get("prompt_tokens"),
+                    tokens_out=usage.get("completion_tokens"),
+                    latency_ms=(time.monotonic() - started) * 1000,
+                )
 
 
 class FallbackReader:
