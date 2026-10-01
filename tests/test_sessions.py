@@ -58,3 +58,22 @@ def test_pop_removes_session(clock: FakeClock) -> None:
     store.add(1, 10, [Line("them", "a")])
     assert store.pop(1) is not None
     assert store.get(1) is None
+
+
+def test_answer_is_remembered_for_follow_ups(clock: FakeClock) -> None:
+    store = SessionStore()
+    store.add(1, 10, [Line("them", "a")])
+    store.remember_answer(1, "first", "answer 1")
+    store.remember_answer(1, "bolder", "answer 2")
+    session = store.get(1)
+    assert session is not None
+    assert (session.first_request, session.last_answer) == ("first", "answer 2")
+
+
+def test_new_dialogue_after_answer_starts_fresh(clock: FakeClock) -> None:
+    store = SessionStore()
+    store.add(1, 10, [Line("them", "old")])
+    store.remember_answer(1, "first", "answer")
+    session = store.add(1, 20, [Line("them", "new")])
+    assert [line.text for line in session.lines] == ["new"]
+    assert session.last_answer is None

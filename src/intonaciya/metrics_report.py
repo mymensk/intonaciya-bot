@@ -63,6 +63,23 @@ class SourceFunnel:
 
 
 @dataclass(frozen=True, slots=True)
+class Feedback:
+    """What users did with the answers over the report window."""
+
+    # Answers shown: analyses and reworks that were not errors or refusals.
+    answers: int
+    takes: dict[int, int]
+    misses: int
+    # Follow-ups to an answer: "softer"/"bolder"/"shorter" buttons and typed requests.
+    reworks: int
+
+    @property
+    def take_rate(self) -> float | None:
+        """Share of answers where the user picked a variant: the main quality signal."""
+        return round(sum(self.takes.values()) / self.answers, 3) if self.answers else None
+
+
+@dataclass(frozen=True, slots=True)
 class Summary:
     days: list[DayStats]
     total_users: int
@@ -71,6 +88,7 @@ class Summary:
     d1: float | None
     d7: float | None
     sources: list[SourceFunnel]
+    feedback: Feedback
 
 
 def _scalar(db: sqlite3.Connection, sql: str, *params: object) -> int:
@@ -170,6 +188,36 @@ def _source_funnels(db: sqlite3.Connection, today: date) -> list[SourceFunnel]:
     return [SourceFunnel(*(row[0], *(value or 0 for value in row[1:]))) for row in rows]
 
 
+def _feedback(db: sqlite3.Connection, since: str) -> Feedback:
+    real = "is_test = 0 AND day >= ?"
+    takes = dict(
+        db.execute(
+            f"SELECT value, COUNT(*) FROM events WHERE {real} AND event = 'feedback'"
+            " AND status = 'take' GROUP BY value",
+            (since,),
+        ).fetchall()
+    )
+    return Feedback(
+        answers=_scalar(
+            db,
+            f"SELECT COUNT(*) FROM events WHERE {real} AND event = 'analysis' AND status = 'none'",
+            since,
+        ),
+        takes={n: takes.get(n, 0) for n in (1, 2, 3)},
+        misses=_scalar(
+            db,
+            f"SELECT COUNT(*) FROM events WHERE {real} AND event = 'feedback' AND status = 'miss'",
+            since,
+        ),
+        reworks=_scalar(
+            db,
+            f"SELECT COUNT(*) FROM events WHERE {real} AND event = 'analysis'"
+            " AND purpose IN ('refine', 'followup')",
+            since,
+        ),
+    )
+
+
 def build_summary(db: sqlite3.Connection, *, days: int, today: date) -> Summary:
     spend = _daily_spend(db)
     day_list = [(today - timedelta(days=offset)).isoformat() for offset in range(days)]
@@ -179,7 +227,9 @@ def build_summary(db: sqlite3.Connection, *, days: int, today: date) -> Summary:
         f"SELECT COUNT(DISTINCT user_key) FROM events WHERE is_test = 0 AND {_ACTIVE} AND day > ?",
         (today - timedelta(days=30)).isoformat(),
     )
-    week = stats[:7]
+    # Average over the days the bot has been live, so a fresh launch is not diluted.
+    first_day = db.execute("SELECT MIN(day) FROM events WHERE is_test = 0").fetchone()[0]
+    week = [s for s in stats[:7] if first_day and s.day >= first_day]
     avg_dau = sum(s.dau for s in week) / len(week) if week else 0
     return Summary(
         days=stats,
@@ -189,6 +239,7 @@ def build_summary(db: sqlite3.Connection, *, days: int, today: date) -> Summary:
         d1=_retention(db, 1, today),
         d7=_retention(db, 7, today),
         sources=_source_funnels(db, today),
+        feedback=_feedback(db, day_list[-1]),
     )
 
 
@@ -216,6 +267,13 @@ def format_summary(summary: Summary) -> str:
         "",
         f"Сегодня: токены {today.tokens_in}→{today.tokens_out}, пик {today.peak_rpm} запр/мин"
         f" и {today.peak_tpm} токенов/мин, средняя задержка {today.avg_latency_ms} мс",
+    ]
+    fb = summary.feedback
+    takes = ", ".join(f"{n}: {count}" for n, count in fb.takes.items())
+    lines += [
+        "",
+        f"Ответы за период: {fb.answers}, выбрали вариант {_pct(fb.take_rate)} ({takes}),"
+        f" «не то» {fb.misses}, доработок {fb.reworks}",
     ]
     if summary.sources:
         lines += ["", "Каналы: пришли → согласие → разбор (активация) | D1 | запросов на чел."]
