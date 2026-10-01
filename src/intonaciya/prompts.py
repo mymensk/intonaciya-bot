@@ -21,3 +21,14 @@ def build_coach_messages(situation: str, lines: Sequence[Line], request: str) ->
         request=request,
     )
     return [Message("system", load_prompt("coach_system.md")), Message("user", user)]
+
+
+def build_follow_up_messages(
+    situation: str, lines: Sequence[Line], first_request: str, answer: str, request: str
+) -> list[Message]:
+    """Asks to rework the previous answer, keeping the dialogue and the original goal."""
+    return [
+        *build_coach_messages(situation, lines, first_request),
+        Message("assistant", answer),
+        Message("user", request),
+    ]

@@ -25,3 +25,15 @@ async def test_stub_echoes_user_prompt() -> None:
     messages = build_coach_messages("Знакомство", [Line("them", "Привет")], "Ответ")
     completion = await StubProvider().complete(messages)
     assert messages[1].content in completion.text
+
+
+def test_follow_up_keeps_dialogue_goal_and_answer() -> None:
+    from intonaciya.dialogue import Line
+    from intonaciya.prompts import build_follow_up_messages
+
+    messages = build_follow_up_messages(
+        "situation", [Line("them", "hi")], "invite", "three variants", "bolder"
+    )
+    assert [m.role for m in messages] == ["system", "user", "assistant", "user"]
+    assert "invite" in messages[1].content and "hi" in messages[1].content
+    assert (messages[2].content, messages[3].content) == ("three variants", "bolder")

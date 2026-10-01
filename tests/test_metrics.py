@@ -156,3 +156,18 @@ def test_summary_counts_real_users_only(metrics: Metrics, clock) -> None:
     write_csv(summary, out)
     rows = list(csv.DictReader(io.StringIO(out.getvalue())))
     assert [row["day"] for row in rows] == ["2026-10-01", "2026-10-02"]
+
+
+def test_feedback_counts_takes_misses_and_reworks(metrics: Metrics, clock) -> None:
+    clock("2026-10-01T09:00:00")
+    metrics.record("analysis", USER, purpose="initial", status="none")
+    metrics.record("feedback", USER, status="take", value=3)
+    metrics.record("analysis", OTHER, purpose="initial", status="none")
+    metrics.record("feedback", OTHER, status="miss")
+    metrics.record("analysis", OTHER, purpose="refine", status="none")
+    metrics.record("feedback", OTHER, status="take", value=1)
+    metrics.record("feedback", TESTER, status="take", value=2)
+
+    fb = build_summary(metrics.connection, days=1, today=date(2026, 10, 1)).feedback
+    assert (fb.answers, fb.takes, fb.misses, fb.reworks) == (3, {1: 1, 2: 0, 3: 1}, 1, 1)
+    assert fb.take_rate == 0.667

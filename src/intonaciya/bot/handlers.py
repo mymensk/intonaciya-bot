@@ -27,7 +27,7 @@ from intonaciya.dialogue import format_dialogue, to_line
 from intonaciya.llm import LLMProvider, RefusalKind, classify_refusal
 from intonaciya.metrics import MSK, Metrics, clean_source, current_user_id
 from intonaciya.metrics_report import build_summary, format_summary
-from intonaciya.prompts import build_coach_messages
+from intonaciya.prompts import build_coach_messages, build_follow_up_messages
 from intonaciya.screenshots import ScreenshotReader
 from intonaciya.sessions import SessionStore
 
@@ -47,6 +47,23 @@ _KEYBOARD = InlineKeyboardMarkup(
         ]
     ]
 )
+_REFINE_ROW = [
+    InlineKeyboardButton(text=label, callback_data=f"refine:{kind}")
+    for kind, label in texts.REFINE_BUTTONS.items()
+]
+# Under every answer: which variant the user takes (the main quality signal),
+# ways to rework the variants, and "not it".
+_ANSWER_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(text=texts.TAKE_BUTTON.format(n=n), callback_data=f"take:{n}")
+            for n in (1, 2, 3)
+        ],
+        _REFINE_ROW,
+        [InlineKeyboardButton(text=texts.MISS_BUTTON, callback_data="miss")],
+    ]
+)
+_REFINE_KEYBOARD = InlineKeyboardMarkup(inline_keyboard=[_REFINE_ROW])
 _CONSENT_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[[InlineKeyboardButton(text=texts.CONSENT_BUTTON, callback_data="consent")]]
 )
@@ -159,7 +176,10 @@ async def _analyze(
     llm: LLMProvider,
     metrics: Metrics,
     settings: Settings,
+    *,
+    follow_up_kind: str = "followup",
 ) -> None:
+    """Analyses the dialogue, or reworks the previous answer if there is one."""
     session = sessions.get(user_id)
     if session is None:
         await message.answer(texts.SESSION_EXPIRED)
@@ -170,7 +190,18 @@ async def _analyze(
 
     await message.answer(texts.THINKING)
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-    messages = build_coach_messages(texts.DEFAULT_SITUATION, session.lines, request)
+    if session.last_answer is None:
+        kind = "initial"
+        messages = build_coach_messages(texts.DEFAULT_SITUATION, session.lines, request)
+    else:
+        kind = follow_up_kind
+        messages = build_follow_up_messages(
+            texts.DEFAULT_SITUATION,
+            session.lines,
+            session.first_request or texts.DEFAULT_REQUEST,
+            session.last_answer,
+            request,
+        )
     started = time.monotonic()
     try:
         completion = await llm.complete(messages)
@@ -186,7 +217,7 @@ async def _analyze(
             model=llm.model,
             latency_ms=latency_ms,
         )
-        metrics.record("analysis", user_id, status="error", value=len(session.lines))
+        metrics.record("analysis", user_id, purpose=kind, status="error", value=len(session.lines))
         await message.answer(texts.LLM_ERROR)
         return
 
@@ -202,7 +233,9 @@ async def _analyze(
         tokens_out=completion.completion_tokens,
         latency_ms=latency_ms,
     )
-    metrics.record("analysis", user_id, status=refusal.value, value=len(session.lines))
+    metrics.record(
+        "analysis", user_id, purpose=kind, status=refusal.value, value=len(session.lines)
+    )
     logger.info(
         "analysis_done user=%s lines=%s refusal=%s latency_ms=%d tokens_in=%s tokens_out=%s",
         user_id,
@@ -212,11 +245,13 @@ async def _analyze(
         completion.prompt_tokens,
         completion.completion_tokens,
     )
-    sessions.pop(user_id)
     if refusal is RefusalKind.HARD:
+        sessions.pop(user_id)
         await message.answer(texts.LLM_BLOCKED)
     else:
-        await message.answer(completion.text)
+        # Kept in memory for a few more minutes so the answer can be reworked.
+        sessions.remember_answer(user_id, request, completion.text)
+        await message.answer(completion.text, reply_markup=_ANSWER_KEYBOARD)
 
 
 async def _send_with_picture(
@@ -404,3 +439,44 @@ async def on_reset_button(callback: CallbackQuery, sessions: SessionStore) -> No
     await callback.answer(texts.RESET_DONE)
     if isinstance(callback.message, Message):
         await callback.message.edit_reply_markup(reply_markup=None)
+
+
+@router.callback_query(F.data.startswith("take:"))
+async def on_take(callback: CallbackQuery, metrics: Metrics) -> None:
+    variant = int(callback.data.split(":", 1)[1])
+    metrics.record("feedback", callback.from_user.id, status="take", value=variant)
+    await callback.answer(texts.TAKE_DONE, show_alert=True)
+    if isinstance(callback.message, Message):
+        await callback.message.edit_reply_markup(reply_markup=_REFINE_KEYBOARD)
+
+
+@router.callback_query(F.data == "miss")
+async def on_miss(callback: CallbackQuery, metrics: Metrics) -> None:
+    metrics.record("feedback", callback.from_user.id, status="miss")
+    await callback.answer()
+    if isinstance(callback.message, Message):
+        await callback.message.edit_reply_markup(reply_markup=_REFINE_KEYBOARD)
+        await callback.message.answer(texts.MISS_PROMPT)
+
+
+@router.callback_query(F.data.startswith("refine:"))
+async def on_refine(
+    callback: CallbackQuery,
+    sessions: SessionStore,
+    llm: LLMProvider,
+    metrics: Metrics,
+    settings: Settings,
+) -> None:
+    request = texts.REFINE_REQUESTS.get(callback.data.split(":", 1)[1])
+    await callback.answer()
+    if request and isinstance(callback.message, Message):
+        await _analyze(
+            callback.message,
+            callback.from_user.id,
+            request,
+            sessions,
+            llm,
+            metrics,
+            settings,
+            follow_up_kind="refine",
+        )
