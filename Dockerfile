@@ -11,6 +11,7 @@ ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY prompts ./prompts
+COPY assets ./assets
 # Editable install keeps prompts/ next to the package, where the code looks for it.
 RUN pip install -e .
 

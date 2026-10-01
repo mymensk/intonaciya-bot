@@ -4,6 +4,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from aiogram import F, Router
@@ -11,6 +12,7 @@ from aiogram.enums import ChatAction
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     CallbackQuery,
+    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
@@ -48,6 +50,11 @@ _KEYBOARD = InlineKeyboardMarkup(
 _CONSENT_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[[InlineKeyboardButton(text=texts.CONSENT_BUTTON, callback_data="consent")]]
 )
+# Picture sent with the first message after "Start".
+START_PICTURE = Path(__file__).resolve().parents[3] / "assets" / "start.png"
+# Telegram file_id of the uploaded picture: upload once, then reuse.
+_start_picture_id: str | None = None
+
 # Reachable before consent: the consent flow itself and the privacy notice.
 _OPEN_COMMANDS = ("/start", "/privacy", "/forget")
 
@@ -212,6 +219,20 @@ async def _analyze(
         await message.answer(completion.text)
 
 
+async def _send_with_picture(
+    message: Message, text: str, reply_markup: InlineKeyboardMarkup | None = None
+) -> None:
+    global _start_picture_id
+    if _start_picture_id is None and not START_PICTURE.exists():
+        await message.answer(text, reply_markup=reply_markup)
+        return
+    sent = await message.answer_photo(
+        _start_picture_id or FSInputFile(START_PICTURE), caption=text, reply_markup=reply_markup
+    )
+    if sent.photo:
+        _start_picture_id = sent.photo[-1].file_id
+
+
 @router.message(CommandStart())
 async def on_start(
     message: Message, command: CommandObject, event_from_user: User, metrics: Metrics
@@ -221,9 +242,9 @@ async def on_start(
     metrics.register(event_from_user.id, source)
     metrics.record("start", event_from_user.id, purpose=source)
     if metrics.has_consented(event_from_user.id):
-        await message.answer(texts.START)
+        await _send_with_picture(message, texts.START)
     else:
-        await message.answer(texts.CONSENT, reply_markup=_CONSENT_KEYBOARD)
+        await _send_with_picture(message, texts.CONSENT, _CONSENT_KEYBOARD)
 
 
 @router.callback_query(F.data == "consent")
