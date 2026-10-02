@@ -169,6 +169,13 @@ class Metrics:
             ),
         )
 
+    def has_event(self, user_id: int, event: str) -> bool:
+        row = self._db.execute(
+            "SELECT 1 FROM events WHERE user_key = ? AND event = ? LIMIT 1",
+            (self.user_key(user_id), event),
+        ).fetchone()
+        return row is not None
+
     def llm_calls_today(self, user_id: int) -> int:
         (count,) = self._db.execute(
             "SELECT COUNT(*) FROM events WHERE user_key = ? AND day = ? AND event = 'llm_call'",
