@@ -171,3 +171,16 @@ def test_feedback_counts_takes_misses_and_reworks(metrics: Metrics, clock) -> No
     fb = build_summary(metrics.connection, days=1, today=date(2026, 10, 1)).feedback
     assert (fb.answers, fb.takes, fb.misses, fb.reworks) == (3, {1: 1, 2: 0, 3: 1}, 1, 1)
     assert fb.take_rate == 0.667
+
+
+def test_rating_is_averaged_and_asked_once(metrics: Metrics, clock) -> None:
+    clock("2026-10-01T09:00:00")
+    assert not metrics.has_event(USER, "rate_asked")
+    metrics.record("rate_asked", USER)
+    assert metrics.has_event(USER, "rate_asked")
+    metrics.record("feedback", USER, status="rating", value=5)
+    metrics.record("feedback", OTHER, status="rating", value=4)
+    metrics.record("feedback", TESTER, status="rating", value=1)
+
+    fb = build_summary(metrics.connection, days=1, today=date(2026, 10, 1)).feedback
+    assert (fb.ratings, fb.avg_rating) == (2, 4.5)

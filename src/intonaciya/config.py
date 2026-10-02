@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     daily_llm_limit: int = 30
     # Where to reach the operator; shown in the privacy notice.
     support_contact: str = ""
+    # Usability survey offered once, after the user takes a variant ("" to skip the link).
+    survey_url: str = ""
 
     # Usage metrics database (SQLite). Telegram IDs are stored as HMAC digests
     # keyed with this secret: keep it stable, or users can no longer be matched.

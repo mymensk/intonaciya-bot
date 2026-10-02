@@ -72,6 +72,8 @@ class Feedback:
     misses: int
     # Follow-ups to an answer: "softer"/"bolder"/"shorter" buttons and typed requests.
     reworks: int
+    ratings: int = 0
+    avg_rating: float | None = None
 
     @property
     def take_rate(self) -> float | None:
@@ -197,6 +199,11 @@ def _feedback(db: sqlite3.Connection, since: str) -> Feedback:
             (since,),
         ).fetchall()
     )
+    ratings, avg = db.execute(
+        f"SELECT COUNT(*), AVG(value) FROM events WHERE {real} AND event = 'feedback'"
+        " AND status = 'rating'",
+        (since,),
+    ).fetchone()
     return Feedback(
         answers=_scalar(
             db,
@@ -215,6 +222,8 @@ def _feedback(db: sqlite3.Connection, since: str) -> Feedback:
             " AND purpose IN ('refine', 'followup')",
             since,
         ),
+        ratings=ratings,
+        avg_rating=None if avg is None else round(avg, 1),
     )
 
 
@@ -274,6 +283,7 @@ def format_summary(summary: Summary) -> str:
         "",
         f"Ответы за период: {fb.answers}, выбрали вариант {_pct(fb.take_rate)} ({takes}),"
         f" «не то» {fb.misses}, доработок {fb.reworks}",
+        f"Оценка полезности: {fb.avg_rating or '—'} из 5 ({fb.ratings} оценок)",
     ]
     if summary.sources:
         lines += ["", "Каналы: пришли → согласие → разбор (активация) | D1 | запросов на чел."]

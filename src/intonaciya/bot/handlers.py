@@ -64,6 +64,11 @@ _ANSWER_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 _REFINE_KEYBOARD = InlineKeyboardMarkup(inline_keyboard=[_REFINE_ROW])
+_RATE_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text=str(n), callback_data=f"rate:{n}") for n in range(1, 6)]
+    ]
+)
 _CONSENT_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[[InlineKeyboardButton(text=texts.CONSENT_BUTTON, callback_data="consent")]]
 )
@@ -443,11 +448,34 @@ async def on_reset_button(callback: CallbackQuery, sessions: SessionStore) -> No
 
 @router.callback_query(F.data.startswith("take:"))
 async def on_take(callback: CallbackQuery, metrics: Metrics) -> None:
+    user_id = callback.from_user.id
     variant = int(callback.data.split(":", 1)[1])
-    metrics.record("feedback", callback.from_user.id, status="take", value=variant)
+    metrics.record("feedback", user_id, status="take", value=variant)
     await callback.answer(texts.TAKE_DONE, show_alert=True)
     if isinstance(callback.message, Message):
         await callback.message.edit_reply_markup(reply_markup=_REFINE_KEYBOARD)
+        # Ask for a rating once per user, right after they got what they came for.
+        if not metrics.has_event(user_id, "rate_asked"):
+            metrics.record("rate_asked", user_id)
+            await callback.message.answer(texts.RATE_PROMPT, reply_markup=_RATE_KEYBOARD)
+
+
+@router.callback_query(F.data.startswith("rate:"))
+async def on_rate(callback: CallbackQuery, metrics: Metrics, settings: Settings) -> None:
+    rating = int(callback.data.split(":", 1)[1])
+    metrics.record("feedback", callback.from_user.id, status="rating", value=rating)
+    await callback.answer()
+    if not isinstance(callback.message, Message):
+        return
+    if settings.survey_url:
+        survey = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=texts.SURVEY_BUTTON, url=settings.survey_url)]
+            ]
+        )
+        await callback.message.edit_text(texts.SURVEY_INVITE, reply_markup=survey)
+    else:
+        await callback.message.edit_text(texts.RATE_THANKS)
 
 
 @router.callback_query(F.data == "miss")
